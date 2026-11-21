@@ -1,5 +1,3 @@
-Here is the updated README.md with cloning, virtual environment setup, installing dependencies, downloading data, and running main.py all consolidated cleanly into the Quickstart section:
-
 # RhizoCoast AI — Predictive Storm Warning Model
 
 Machine learning pipeline for **RhizoCoast AI**, an artificial mangrove-inspired biochar seawall and coastal early-warning system. This model analyzes real-time barometric pressure, wind vectors, and tidal surge rates to predict incoming extreme weather up to 6 hours in advance
