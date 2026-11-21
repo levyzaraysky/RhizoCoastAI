@@ -69,6 +69,12 @@ predictions = (probs >= 0.15).astype(int)
 print("\n--- 2024 Full-Year Classification Report ---")
 print(classification_report(y_test, predictions, zero_division=0))
 
+# Check Tier 2 (Evacuation Warning) accuracy at 65% threshold
+evac_preds = (probs >= 0.65).astype(int)
+print("\n--- Tier 2 Evacuation Alert Report (Threshold >= 0.65) ---")
+print(classification_report(y_test, evac_preds, zero_division=0))
+
+
 model.save_model("rhizocoast_model.json")
 print("Model saved successfully as 'rhizocoast_model.json'")
 
