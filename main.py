@@ -1,69 +1,98 @@
 import pandas as pd
 import numpy as np
+from sklearn.metrics import classification_report
+from xgboost import XGBClassifier
 
-years = [2022, 2023, 2024]
-all_years_data = []
+# ---------------------------------------------------------
+# 1. LOAD MULTI-YEAR DATA
+# ---------------------------------------------------------
+df = pd.read_csv("key_west_2022_2024.csv")
+df['timestamp'] = pd.to_datetime(df['timestamp'])
+df = df.sort_values('timestamp').reset_index(drop=True)
 
-for year in years:
-    print(f"Downloading Key West data for {year}...")
-    
-    # 1. NDBC Meteorological Data
-    met_url = f"https://www.ndbc.noaa.gov/data/historical/stdmet/kywf1h{year}.txt.gz"
-    df_met = pd.read_csv(met_url, sep=r'\s+', skiprows=[1], compression='gzip')
-    
-    # Handle '#YY' vs 'YYYY' column header differences across NOAA years
-    year_col = '#YY' if '#YY' in df_met.columns else 'YYYY'
-    df_met['timestamp'] = pd.to_datetime(
-        df_met[[year_col, 'MM', 'DD', 'hh', 'mm']].rename(
-            columns={year_col: 'year', 'MM': 'month', 'DD': 'day', 'hh': 'hour', 'mm': 'minute'}
-        )
-    )
-    df_met['timestamp'] = df_met['timestamp'].dt.round('h')
-    df_met = df_met.replace([99.0, 999, 999.0, 9999.0], np.nan)
-    
-    pres_col = 'PRES' if 'PRES' in df_met.columns else 'BAR'
-    df_met = df_met[['timestamp', pres_col, 'WSPD', 'GST', 'WDIR']].rename(columns={pres_col: 'PRES'})
-    df_met = df_met.drop_duplicates(subset=['timestamp']).sort_values('timestamp')
-    
-    # 2. NOAA CO-OPS Hourly Tide Levels
-    tide_url = (
-        f"https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?"
-        f"begin_date={year}0101&end_date={year}1231&station=8724580"
-        f"&product=hourly_height&datum=MLLW&units=english&time_zone=gmt&format=csv"
-    )
-    df_tide = pd.read_csv(tide_url)
-    df_tide.columns = df_tide.columns.str.strip()
-    df_tide['timestamp'] = pd.to_datetime(df_tide['Date Time'])
-    df_tide['TIDE'] = pd.to_numeric(df_tide['Water Level'], errors='coerce')
-    df_tide = df_tide[['timestamp', 'TIDE']].drop_duplicates(subset=['timestamp'])
-    
-    # 3. Merge Year
-    df_merged = pd.merge(df_met, df_tide, on='timestamp', how='inner')
-    all_years_data.append(df_merged)
+# ---------------------------------------------------------
+# 2. FEATURE ENGINEERING
+# ---------------------------------------------------------
+df['pres_drop_1h'] = df['PRES'] - df['PRES'].shift(1)
+df['pres_drop_3h'] = df['PRES'] - df['PRES'].shift(3)
+df['gust_ratio'] = df['GST'] / (df['WSPD'] + 1e-5)
+df['wind_accel_1h'] = df['WSPD'] - df['WSPD'].shift(1)
+df['tide_change_2h'] = df['TIDE'] - df['TIDE'].shift(2)
 
-# Combine all 3 years chronologically
-df_full = pd.concat(all_years_data, ignore_index=True)
-df_full = df_full.sort_values('timestamp').drop_duplicates(subset=['timestamp']).reset_index(drop=True)
+df_clean = df.dropna().reset_index(drop=True)
 
-# Interpolate short sensor dropouts (up to 3 hours) and drop remaining NaNs
-cols = ['PRES', 'WSPD', 'GST', 'WDIR', 'TIDE']
-df_full[cols] = df_full[cols].interpolate(limit=3)
-df_clean = df_full.dropna().reset_index(drop=True)
+# ---------------------------------------------------------
+# 3. YEAR-BASED TRAIN / TEST SPLIT (No Seasonal Bias!)
+# ---------------------------------------------------------
+feature_cols = [
+    'PRES', 
+    'pres_drop_1h', 
+    'pres_drop_3h', 
+    'WSPD', 
+    'GST', 
+    'gust_ratio', 
+    'wind_accel_1h', 
+    'TIDE', 
+    'tide_change_2h'
+]
 
-# 4. Auto-Label Storm Warnings (including 6-hour early warning lead time)
-is_severe = (
-    (df_clean['PRES'] < 1008.0) | 
-    (df_clean['WSPD'] > 14.0) | 
-    (df_clean['TIDE'] > 3.2)
+# Train on 2022-2023 (all 4 seasons x 2), Test on unseen 2024
+train_mask = df_clean['timestamp'].dt.year < 2024
+test_mask = df_clean['timestamp'].dt.year == 2024
+
+X_train, y_train = df_clean.loc[train_mask, feature_cols], df_clean.loc[train_mask, 'storm_warning']
+X_test, y_test = df_clean.loc[test_mask, feature_cols], df_clean.loc[test_mask, 'storm_warning']
+
+print(f"Training hours (2022-2023): {len(X_train)} | Testing hours (2024): {len(X_test)}")
+
+# ---------------------------------------------------------
+# 4. TRAIN XGBOOST MODEL (High-Recall Storm Sensitivity)
+# ---------------------------------------------------------
+model = XGBClassifier(
+    n_estimators=150,
+    max_depth=4,
+    learning_rate=0.05,
+    scale_pos_weight=25,
+    objective='binary:logistic',
+    eval_metric='logloss',
+    random_state=42
 )
 
-df_clean['storm_warning'] = (
-    is_severe | 
-    is_severe.shift(-1).fillna(False) | 
-    is_severe.shift(-3).fillna(False) | 
-    is_severe.shift(-6).fillna(False)
-).astype(int)
+model.fit(X_train, y_train)
 
-df_clean.to_csv("key_west_2022_2024.csv", index=False)
-print(f"\nDone! Saved {len(df_clean)} total rows (2022–2024) to 'key_west_2022_2024.csv'.")
-print(f"Total storm warning hours: {df_clean['storm_warning'].sum()}")
+# ---------------------------------------------------------
+# 5. EVALUATE & SAVE MODEL
+# ---------------------------------------------------------
+probs = model.predict_proba(X_test)[:, 1]
+predictions = (probs >= 0.15).astype(int)
+
+print("\n--- 2024 Full-Year Classification Report ---")
+print(classification_report(y_test, predictions, zero_division=0))
+
+model.save_model("rhizocoast_model.json")
+print("Model saved successfully as 'rhizocoast_model.json'")
+
+# ---------------------------------------------------------
+# 6. SIMULATE LIVE SENSOR INFERENCE
+# ---------------------------------------------------------
+live_reading = pd.DataFrame([{
+    'PRES': 1004.0,
+    'pres_drop_1h': -1.8,
+    'pres_drop_3h': -4.2,
+    'WSPD': 14.5,
+    'GST': 19.8,
+    'gust_ratio': 19.8 / 14.5,
+    'wind_accel_1h': 2.5,
+    'TIDE': 2.30,
+    'tide_change_2h': 0.85
+}])
+
+storm_prob = model.predict_proba(live_reading)[0][1]
+print(f"\nSimulated Live Storm Probability: {storm_prob * 100:.1f}%")
+
+if storm_prob >= 0.75:
+    print("ALERT STATUS: [LEVEL 2 WARNING] Evacuate / Notify Coastal Authorities!")
+elif storm_prob >= 0.15:
+    print("ALERT STATUS: [LEVEL 1 WATCH] Abnormal coastal conditions detected.")
+else:
+    print("ALERT STATUS: [NORMAL] Seawall sensors nominal.")
