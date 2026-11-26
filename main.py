@@ -24,7 +24,7 @@ df_clean = df.dropna().reset_index(drop=True)
 # ---------------------------------------------------------
 # 3. YEAR-BASED TRAIN / TEST SPLIT (No Seasonal Bias!)
 # ---------------------------------------------------------
-feature_cols = [
+data_used = [
     'PRES', 
     'pres_drop_1h', 
     'pres_drop_3h', 
@@ -40,8 +40,8 @@ feature_cols = [
 train_mask = df_clean['timestamp'].dt.year < 2024
 test_mask = df_clean['timestamp'].dt.year == 2024
 
-X_train, y_train = df_clean.loc[train_mask, feature_cols], df_clean.loc[train_mask, 'storm_warning']
-X_test, y_test = df_clean.loc[test_mask, feature_cols], df_clean.loc[test_mask, 'storm_warning']
+X_train, y_train = df_clean.loc[train_mask, data_used], df_clean.loc[train_mask, 'storm_warning']
+X_test, y_test = df_clean.loc[test_mask, data_used], df_clean.loc[test_mask, 'storm_warning']
 
 print(f"Training hours (2022-2023): {len(X_train)} | Testing hours (2024): {len(X_test)}")
 
@@ -69,10 +69,10 @@ predictions = (probs >= 0.15).astype(int)
 print("\n--- 2024 Full-Year Classification Report ---")
 print(classification_report(y_test, predictions, zero_division=0))
 
-# Check Tier 2 (Evacuation Warning) accuracy at 65% threshold
-evac_preds = (probs >= 0.65).astype(int)
+# Check accuracy at 65% threshold
+evacuate_pred = (probs >= 0.65).astype(int)
 print("\n--- Tier 2 Evacuation Alert Report (Threshold >= 0.65) ---")
-print(classification_report(y_test, evac_preds, zero_division=0))
+print(classification_report(y_test, evacuate_pred, zero_division=0))
 
 
 model.save_model("rhizocoast_model.json")
@@ -81,7 +81,7 @@ print("Model saved successfully as 'rhizocoast_model.json'")
 # ---------------------------------------------------------
 # 6. SIMULATE LIVE SENSOR INFERENCE
 # ---------------------------------------------------------
-live_reading = pd.DataFrame([{
+test_live_reading = pd.DataFrame([{
     'PRES': 1004.0,
     'pres_drop_1h': -1.8,
     'pres_drop_3h': -4.2,
@@ -93,12 +93,12 @@ live_reading = pd.DataFrame([{
     'tide_change_2h': 0.85
 }])
 
-storm_prob = model.predict_proba(live_reading)[0][1]
-print(f"\nSimulated Live Storm Probability: {storm_prob * 100:.1f}%")
+storm_probability = model.predict_proba(test_live_reading)[0][1]
+print(f"\nSimulated Live Storm Probability: {storm_probability * 100:.1f}%")
 
-if storm_prob >= 0.75:
+if storm_probability >= 0.75:
     print("ALERT STATUS: [LEVEL 2 WARNING] Evacuate / Notify Coastal Authorities!")
-elif storm_prob >= 0.15:
+elif storm_probability >= 0.15:
     print("ALERT STATUS: [LEVEL 1 WATCH] Abnormal coastal conditions detected.")
 else:
     print("ALERT STATUS: [NORMAL] Seawall sensors nominal.")
