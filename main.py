@@ -79,6 +79,32 @@ model.save_model("rhizocoast_model.json")
 print("Model saved successfully as 'rhizocoast_model.json'")
 
 # ---------------------------------------------------------
+# 5b. Event Catch Rate test & 0.5 Threshold test
+# ---------------------------------------------------------
+evac_50 = (probs >= 0.5).astype(int)
+print("\n--- Tier 2 Evacuation Alert Report (Threshold >= 0.5) ---")
+print(classification_report(y_test, evac_50, zero_division=0))
+
+# Group consecutive storms into separate events
+test_df = df_clean.loc[test_mask].copy()
+test_df['prob'] = probs
+test_df['event_id'] = (test_df['storm_warning'].diff() == 1).cumsum()
+
+storm_events = test_df[test_df['storm_warning'] == 1].groupby('event_id').agg(
+    start_time=('timestamp', 'min'),
+    duration_hours=('storm_warning', 'count'),
+    max_prob=('prob', 'max')
+)
+
+caught_evac = (storm_events['max_prob'] >= 0.5).sum()
+caught_watch = ((storm_events['max_prob'] >= 0.15)).sum()
+total_events = len(storm_events)
+
+print(f"Total Distinct Storm Events in 2024: {total_events}")
+print(f"Total Caught Evacuation-Level Storms (>=0.5): {caught_evac} | Catch Rate: {caught_evac / total_events:.2%}")
+print(f"Total Caught Watch-Level Storms (>=0.15): {caught_watch} | Catch Rate: {caught_watch / total_events:.2%}")
+
+# ---------------------------------------------------------
 # 6. SIMULATE LIVE SENSOR INFERENCE
 # ---------------------------------------------------------
 test_live_reading = pd.DataFrame([{
